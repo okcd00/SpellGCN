@@ -4,23 +4,22 @@ if [ $# -lt 6 ];then
   exit 0
 fi
 
+gpus=4,5,6,7
 task_name=CSC
 timestamp=`date "+%Y-%m-%d-%H-%M-%S"`
 lr=5e-5
-batch_size=32
+batch_size=8
 num_epochs=10
 max_seq_length=180
 do_lower_case=true
 graph_dir="../data/gcn_graph.ty_xj/"
- 
+keep_checkpoint_max=3
+
 mkdir -p log/
 
 # TRAIN
 for i in $(seq 0 0)
 do
-
-output_dir=log/${2}_sighan13_${task_name}_$i 
-log_dir=log/${2}_sighan13_${task_name}_$i 
 
 if [ ! -d "${output_dir}/src" ]; then
   mkdir -p ${output_dir}/src
@@ -28,9 +27,12 @@ if [ ! -d "${output_dir}/src" ]; then
   cp ../*py ${output_dir}/src
 fi
 
-#sleep $i
+log_dir=log/${2}_bbcm_${task_name}_$i 
+output_dir=log/${2}_bbcm_${task_name}_$i 
+
+# sleep $i
 echo "Start running ${task_name} task-${i} log to ${output_dir}.log"
-CUDA_VISIBLE_DEVICES=$i python ../run_spellgcn.py \
+CUDA_VISIBLE_DEVICES=${gpus} python ../run_spellgcn.py \
   --job_name=$2 \
   --task_name=${task_name} \
   --do_train=True \
@@ -44,7 +46,7 @@ CUDA_VISIBLE_DEVICES=$i python ../run_spellgcn.py \
   --train_batch_size=${batch_size} \
   --learning_rate=${lr} \
   --num_train_epochs=${num_epochs} \
-  --keep_checkpoint_max=10 \
+  --keep_checkpoint_max=${keep_checkpoint_max} \
   --random_seed=${i}000 \
   --init_checkpoint=$3/bert_model.ckpt \
   --graph_dir=${graph_dir} \
@@ -56,10 +58,9 @@ wait
 for i in $(seq 0 0)
 do
 
-output_dir=log/${2}_sighan13_${task_name}_$i 
 log_dir=log/${2}_sighan13_${task_name}_$i 
 
-CUDA_VISIBLE_DEVICES=$i python ../run_spellgcn.py \
+CUDA_VISIBLE_DEVICES=${gpus} python ../run_spellgcn.py \
   --job_name=$2 \
   --task_name=${task_name} \
   --do_train=False \
@@ -73,67 +74,68 @@ CUDA_VISIBLE_DEVICES=$i python ../run_spellgcn.py \
   --train_batch_size=${batch_size} \
   --learning_rate=${lr} \
   --num_train_epochs=${num_epochs} \
-  --keep_checkpoint_max=10 \
+  --keep_checkpoint_max=${keep_checkpoint_max} \
   --random_seed=${i}000 \
   --init_checkpoint=${output_dir} \
   --graph_dir=${graph_dir} \
   --output_dir=${output_dir} >> ${log_dir}.log 2>&1 &
+
 done
 wait
 
 # PREDICT & TEST
-#for i in $(seq 0 0)
-#do
+for i in $(seq 0 0)
+do
 
-#output_dir=log/${2}_sighan13_${task_name}_$i 
-#log_dir=log/${2}_sighan14_${task_name}_$i 
+log_dir=log/${2}_sighan14_${task_name}_$i 
 
-#CUDA_VISIBLE_DEVICES=$i python ../run_spellgcn.py \
-#  --job_name=$2 \
-#  --task_name=${task_name} \
-#  --do_train=False \
-#  --do_eval=False \
-#  --do_predict=True \
-#  --data_dir=$5 \
-#  --vocab_file=$3/vocab.txt \
-#  --bert_config_file=$3/bert_config.json \
-#  --max_seq_length=${max_seq_length} \
-#  --max_predictions_per_seq=${max_seq_length} \
-#  --train_batch_size=${batch_size} \
-#  --learning_rate=${lr} \
-#  --num_train_epochs=${num_epochs} \
-#  --keep_checkpoint_max=10 \
-#  --random_seed=${i}000 \
-#  --init_checkpoint=${output_dir} \
-#  --graph_dir=${graph_dir} \
-#  --output_dir=${output_dir} >> ${log_dir}.log 2>&1 &
-#done
-#wait
+CUDA_VISIBLE_DEVICES=${gpus} python ../run_spellgcn.py \
+ --job_name=$2 \
+ --task_name=${task_name} \
+ --do_train=False \
+ --do_eval=False \
+ --do_predict=True \
+ --data_dir=$5 \
+ --vocab_file=$3/vocab.txt \
+ --bert_config_file=$3/bert_config.json \
+ --max_seq_length=${max_seq_length} \
+ --max_predictions_per_seq=${max_seq_length} \
+ --train_batch_size=${batch_size} \
+ --learning_rate=${lr} \
+ --num_train_epochs=${num_epochs} \
+ --keep_checkpoint_max=${keep_checkpoint_max} \
+ --random_seed=${i}000 \
+ --init_checkpoint=${output_dir} \
+ --graph_dir=${graph_dir} \
+ --output_dir=${output_dir} >> ${log_dir}.log 2>&1 &
+
+done
+wait
 
 ## PREDICT & TEST
-#for i in $(seq 0 0)
-#do
+for i in $(seq 0 0)
+do
 
-#output_dir=log/${2}_sighan13_${task_name}_$i 
-#log_dir=log/${2}_sighan15_${task_name}_$i 
+log_dir=log/${2}_sighan15_${task_name}_$i 
 
-#CUDA_VISIBLE_DEVICES=$i python ../run_spellgcn.py \
-#  --job_name=$2 \
-#  --task_name=${task_name} \
-#  --do_train=False \
-#  --do_eval=False \
-#  --do_predict=True \
-#  --data_dir=$6 \
-#  --vocab_file=$3/vocab.txt \
-#  --bert_config_file=$3/bert_config.json \
-#  --max_seq_length=${max_seq_length} \
-#  --max_predictions_per_seq=${max_seq_length} \
-#  --train_batch_size=${batch_size} \
-#  --learning_rate=${lr} \
-#  --num_train_epochs=${num_epochs} \
-#  --keep_checkpoint_max=10 \
-#  --random_seed=${i}000 \
-#  --init_checkpoint=${output_dir} \
-#  --graph_dir=${graph_dir} \
-#  --output_dir=${output_dir} >> ${log_dir}.log 2>&1 &
-#done
+CUDA_VISIBLE_DEVICES=${gpus} python ../run_spellgcn.py \
+ --job_name=$2 \
+ --task_name=${task_name} \
+ --do_train=False \
+ --do_eval=False \
+ --do_predict=True \
+ --data_dir=$6 \
+ --vocab_file=$3/vocab.txt \
+ --bert_config_file=$3/bert_config.json \
+ --max_seq_length=${max_seq_length} \
+ --max_predictions_per_seq=${max_seq_length} \
+ --train_batch_size=${batch_size} \
+ --learning_rate=${lr} \
+ --num_train_epochs=${num_epochs} \
+ --keep_checkpoint_max=${keep_checkpoint_max} \
+ --random_seed=${i}000 \
+ --init_checkpoint=${output_dir} \
+ --graph_dir=${graph_dir} \
+ --output_dir=${output_dir} >> ${log_dir}.log 2>&1 &
+
+done

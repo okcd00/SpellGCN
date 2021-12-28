@@ -30,10 +30,12 @@ import os
 import modeling
 import optimization
 import tokenization
+import tensorboard
 import tensorflow as tf
 from tensorflow.python.estimator import training
 from tensorflow.core.protobuf import rewriter_config_pb2
 import sys
+
 reload(sys)
 sys.setdefaultencoding("utf8")
 flags = tf.flags
@@ -304,8 +306,12 @@ def gcnLayer(gcn_in, in_dim, gcn_dim, batch_size, max_nodes,
           "relation_prototype",
           shape=[in_dim, 1],
           initializer=tf.contrib.layers.xavier_initializer())
-        graph_weights = tf.matmul(multi_graph_embs, w0) / 3
-        graph_weights = tf.nn.softmax(graph_weights, axis=0)
+        if str(tf.__version__) < '1.14':
+          # with tensorflow <1.14
+          graph_weights = tf.tensordot(multi_graph_embs, w0, [[2], [0]]) / 3
+          graph_weights = tf.nn.softmax(graph_weights, axis=0)
+        else:
+          graph_weights = tf.matmul(multi_graph_embs, w0) / 3
         _act_sum = tf.reduce_sum(graph_weights * multi_graph_embs, axis=0) 
 
       act_sum += _act_sum
@@ -383,6 +389,14 @@ def model_fn_builder(adj_mat, w2n, n2w, bert_config, init_checkpoint, learning_r
     tf.logging.info("*** Features ***")
     for name in sorted(features.keys()):
       tf.logging.info("  name = %s, shape = %s" % (name, features[name].shape))
+    # INFO:tensorflow:  name = input_ids, shape = (?, 180)
+    # INFO:tensorflow:  name = input_mask, shape = (?, 180)
+    # INFO:tensorflow:  name = is_real_example, shape = (?,)
+    # INFO:tensorflow:  name = label_ids, shape = (?,)
+    # INFO:tensorflow:  name = masked_lm_ids, shape = (?, 180)
+    # INFO:tensorflow:  name = masked_lm_positions, shape = (?, 180)
+    # INFO:tensorflow:  name = masked_lm_weights, shape = (?, 180)
+    # INFO:tensorflow:  name = segment_ids, shape = (?, 180)
 
     input_ids = features["input_ids"]
     input_mask = features["input_mask"]
@@ -609,8 +623,8 @@ class CSCProcessor(DataProcessor):
       input_file = os.path.join(data_dir, "TestInputWithError.txt") 
       truth_file = os.path.join(data_dir, "TestTruthWithError.txt") 
     else:
-      input_file = os.path.join(data_dir, "TestInput.txt") 
-      truth_file = os.path.join(data_dir, "TestTruth.txt") 
+      input_file = os.path.join(data_dir, "TestInput.txt")
+      truth_file = os.path.join(data_dir, "TestTruth.txt")
      
     #input_file = os.path.join(data_dir, "Training/B1_training_input.txt") 
     #truth_file = os.path.join(data_dir, "Training/B1_training_truth.txt") 
@@ -663,12 +677,17 @@ class CSCProcessor(DataProcessor):
       inp_fields = inp.strip().split("\t")
       trth_fields = trth.strip().split(" ")
      
-      guid = inp_fields[0]  
+      guid = inp_fields[0]
+      # text_a is the sentence inputted with error
       text_a = tokenization.convert_to_unicode(inp_fields[1])
+      # [CLS]...TEXT...[SEP] -- total seqence length less than or equal than max_seq_length
       text_a = text_a[:FLAGS.max_seq_length-2]
+
       masked_lm_positions = [j + 1 for j in range(len(text_a))]
       masked_lm_tokens = [t for t in text_a]
       masked_lm_weights = [1.0 for t in text_a]
+
+      # text_b is the truth label to the text_a
       text_b = None
       label = "0"
       for j, pos_tok in enumerate(trth_fields[1:]):
@@ -678,10 +697,11 @@ class CSCProcessor(DataProcessor):
         # replace mispell tokens of the input sentence to correct tokens.
           if int(pos) < FLAGS.max_seq_length:
             masked_lm_tokens[int(pos)-1] = pos_tok.strip(",").decode("utf8")
+      # masked_lm_token is the correct tokens, text_a is the sentence with error
       examples.append(
           InputExample(guid=guid, 
 			text_a=text_a, 
-			masked_lm_positions=masked_lm_positions, 
+			masked_lm_positions=masked_lm_positions,
 			masked_lm_ids=masked_lm_tokens, 
 			masked_lm_weights=masked_lm_weights,
 			text_b=text_b,
@@ -963,6 +983,7 @@ def load_graph():
   with open("%s/nodes_vocab.txt"%(FLAGS.graph_dir)) as f:
     for i, line in enumerate(f):
       nodes_vocab.setdefault(line.strip(), i)
+
   rels_vocab = {}
   with open("%s/relation_vocab.txt"%(FLAGS.graph_dir)) as f:
     for i, line in enumerate(f):
@@ -970,6 +991,7 @@ def load_graph():
         rels_vocab.setdefault(line.strip(), i)
       else:
         rels_vocab.setdefault(line.strip().split(" ")[0], int(line.strip().split(" ")[1]))
+  # Because the values of rels_vocab are 0 and 1 , the len(set(rels_vocab.values()))==2
   np_adj_mat = np.zeros([len(set(rels_vocab.values())), FLAGS.max_nodes, FLAGS.max_nodes], dtype=np.float)
   with open("%s/spellGraphs.txt"%(FLAGS.graph_dir)) as f:
     for i, line in enumerate(f):
@@ -977,7 +999,7 @@ def load_graph():
       if rel in rels_vocab:
         np_adj_mat[rels_vocab[rel], nodes_vocab[e1], nodes_vocab[e2]] = 1
         np_adj_mat[rels_vocab[rel], nodes_vocab[e2], nodes_vocab[e1]] = 1
-
+  # w2n is used to transfer the index of word to the index of node
   w2n = []
   vocab = {}
   with open("%s/vocab.txt"%(FLAGS.graph_dir)) as f:
@@ -988,6 +1010,8 @@ def load_graph():
         w2n.append(nodes_vocab[word])
       else:
         w2n.append(0)
+
+  # n2w is used to transfer the index of node to the index of word
   n2w = []
   with open("%s/nodes_vocab.txt"%(FLAGS.graph_dir)) as f:
     for i, line in enumerate(f):
@@ -1001,8 +1025,10 @@ def load_graph():
 def main(_):
   if FLAGS.random_seed is not None:
     set_rand_seed(FLAGS.random_seed)
+  # set the type of log is INFO
   tf.logging.set_verbosity(tf.logging.INFO)
   tf.logging.info('config: \n' + tf.flags.FLAGS.flags_into_string())
+
   if FLAGS.use_horovod:
     hvd.init()
 
@@ -1100,8 +1126,6 @@ def main(_):
         drop_remainder=eval_drop_remainder,
         output_mode=processor.get_mode())
 
-
-
     training_hooks = []
     if FLAGS.use_horovod and hvd.size() > 1:
       training_hooks.append(hvd.BroadcastGlobalVariablesHook(0))
@@ -1134,6 +1158,8 @@ def main(_):
 
     output_test_file = os.path.join(FLAGS.output_dir, "test_results.txt")
     input_file = os.path.join(FLAGS.output_dir, "input_file.txt")
+
+    # construct the vocabulary of BERT
     vob = {}
     with open(FLAGS.vocab_file, "r") as f:
       for i, line in enumerate(f):
@@ -1159,6 +1185,9 @@ def main(_):
         log_prob_rows.append(log_prob_row)
 
     log_prob_rows = np.array(log_prob_rows)
+    # store the log probility
+    # np.save(FLAGS.output_dir+"/logProbForTest.npy", log_prob_rows)
+
     print(log_prob_rows.shape) #[instance_num, max_seq_len, vob_num]
 
     # Process the output files to the format given by CSC open-source code. 
@@ -1175,15 +1204,18 @@ def main(_):
             for i, (pt, at) in enumerate(zip(pred[1:], atl[1:])):
               if at == "[SEP]" or at == '[PAD]':
                 break
-              # Post preprocess with unsupervised methods, 
-	      #because unsup BERT always predict punchuation at 1st pos
+
+              # Post preprocess with unsupervised methods, because unsup BERT always predict punchuation at 1st pos
               if i == 0:
                 if pt == "。" or pt == "，":
                   continue
+
+              # if pt starts with ## then remove the most frontest "##"
               if pt.startswith("##"):
                  pt = pt.lstrip("##")   
               if at.startswith("##"):
-                 at = at.lstrip("##")   
+                 at = at.lstrip("##")
+
               if pt != at:
                 output_list.append(str(i+1))
                 output_list.append(pt)
@@ -1199,7 +1231,8 @@ def main(_):
     dc_TP, dc_FP, dc_FN = 0, 0, 0
     correction_file = os.path.join(FLAGS.output_dir, "correction_results.txt")
     correction_writer = tf.gfile.GFile(correction_file, "w")
-    for idx, (pred, actual) in enumerate(zip(open(labels_file), 
+
+    for idx, (pred, actual) in enumerate(zip(open(labels_file),
     	open("%s/TestTruthWithError.txt" %FLAGS.data_dir) if FLAGS.with_error else
     	open("%s/TestTruth.txt" %FLAGS.data_dir))):
       pred_tokens = pred.strip().split(" ")
@@ -1207,19 +1240,20 @@ def main(_):
       #assert pred_tokens[0] == actual_tokens[0]
       pred_tokens = pred_tokens[1:]
       actual_tokens = actual_tokens[1:]
+
       detect_actual_tokens = [int(actual_token.strip(",")) \
-		for i,actual_token in enumerate(actual_tokens) if i%2 ==0]
+        for i,actual_token in enumerate(actual_tokens) if i%2 ==0]
       correct_actual_tokens = [actual_token.strip(",") \
-		for i,actual_token in enumerate(actual_tokens) if i%2 ==1]
+        for i,actual_token in enumerate(actual_tokens) if i%2 ==1]
+
       detect_pred_tokens = [int(pred_token.strip(",")) \
-		for i,pred_token in enumerate(pred_tokens) if i%2 ==0]
+        for i,pred_token in enumerate(pred_tokens) if i%2 ==0]
       _correct_pred_tokens = [pred_token.strip(",") \
-		for i,pred_token in enumerate(pred_tokens) if i%2 ==1]
+        for i,pred_token in enumerate(pred_tokens) if i%2 ==1]
 
       # Postpreprocess for ACL2019 csc paper which only deal with last detect positions in test data.
       # If we wanna follow the ACL2019 csc paper, we should take the detect_pred_tokens to:
 
-      
       max_detect_pred_tokens = detect_pred_tokens
       
       correct_pred_zip = zip(detect_pred_tokens, _correct_pred_tokens)
@@ -1229,13 +1263,12 @@ def main(_):
         sent_P += 1
         if sorted(correct_pred_zip) == sorted(correct_actual_zip):
           correct_sent_TP += 1
+
       if detect_actual_tokens[0] != 0:
         if sorted(detect_actual_tokens) == sorted(detect_pred_tokens): 
           detect_sent_TP += 1
         sent_N += 1
 
-   
- 
       if detect_actual_tokens[0]!=0:
         detect_TP += len(set(max_detect_pred_tokens) & set(detect_actual_tokens)) 
         detect_FN += len(set(detect_actual_tokens) - set(max_detect_pred_tokens)) 
@@ -1247,16 +1280,11 @@ def main(_):
         if dpt in detect_actual_tokens:
           correct_pred_tokens.append((dpt,cpt))
 
-
-
-              
-
       correction_list = [actual.split(" ")[0].strip(",")]
       for dat, cpt in correct_pred_tokens:
         correction_list.append(str(dat))
         correction_list.append(cpt) 
       correction_writer.write(" ,".join(correction_list) + "\n")
-       	
 
       correct_TP += len(set(correct_pred_tokens) & set(zip(detect_actual_tokens,correct_actual_tokens))) 
       correct_FP += len(set(correct_pred_tokens) - set(zip(detect_actual_tokens,correct_actual_tokens)))
@@ -1280,12 +1308,13 @@ def main(_):
     dc_precision = dc_TP * 1.0 / (dc_TP + dc_FP + 1e-8)
     dc_recall = dc_TP * 1.0 / (dc_TP + dc_FN + 1e-8)
     dc_F1 = 2. * dc_precision * dc_recall/ (dc_precision + dc_recall + 1e-8)
-    if FLAGS.with_error:
-      #Token-level metrics
-      print("detect_precision=%f, detect_recall=%f, detect_Fscore=%f" %(detect_precision, detect_recall, detect_F1))
-      print("correct_precision=%f, correct_recall=%f, correct_Fscore=%f" %(correct_precision, correct_recall, correct_F1))  
-      print("dc_joint_precision=%f, dc_joint_recall=%f, dc_joint_Fscore=%f" %(dc_precision, dc_recall, dc_F1))
-   
+
+    # if FLAGS.with_error:
+    #Token-level metrics
+    print("detect_precision=%f, detect_recall=%f, detect_Fscore=%f" %(detect_precision, detect_recall, detect_F1))
+    print("correct_precision=%f, correct_recall=%f, correct_Fscore=%f" %(correct_precision, correct_recall, correct_F1))
+    print("dc_joint_precision=%f, dc_joint_recall=%f, dc_joint_Fscore=%f" %(dc_precision, dc_recall, dc_F1))
+
     detect_sent_precision = detect_sent_TP * 1.0 / (sent_P)
     detect_sent_recall = detect_sent_TP * 1.0 / (sent_N)
     detect_sent_F1 = 2. * detect_sent_precision * detect_sent_recall/ ((detect_sent_precision + detect_sent_recall) + 1e-8)
@@ -1296,13 +1325,9 @@ def main(_):
 
     if not FLAGS.with_error:
       #Sentence-level metrics
-      print("detect_sent_precision=%f, detect_sent_recall=%f, detect_Fscore=%f" %(detect_sent_precision, detect_sent_recall, detect_sent_F1))
-      print("correct_sent_precision=%f, correct_sent_recall=%f, correct_Fscore=%f" %(correct_sent_precision, correct_sent_recall, correct_sent_F1))  
-        
-         
-        
-        
-	
+      print("detect_sent_precision=%f, detect_sent_recall=%f, detect_sent_Fscore=%f" %(detect_sent_precision, detect_sent_recall, detect_sent_F1))
+      print("correct_sent_precision=%f, correct_sent_recall=%f, correct_sent_Fscore=%f" %(correct_sent_precision, correct_sent_recall, correct_sent_F1))
+
 
 if __name__ == "__main__":
   flags.mark_flag_as_required("bert_config_file")

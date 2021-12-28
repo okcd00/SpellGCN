@@ -1,0 +1,11 @@
+/scripts/log
+__pycache__/
+
+.ipynb_checkpoints/
+.virtual_documents/
+
+*.pyc
+*.data-00000-of-00001
+*.index
+*.meta
+
